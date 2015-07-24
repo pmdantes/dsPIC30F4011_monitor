@@ -11,11 +11,14 @@
 #include "p30f4011.h"
 
 
-// LCD pin outs
-#define RS      LATEbits.LATE0 // RED WIRE
-#define RW      LATEbits.LATE1 // BLUE WIRE
-#define EN      LATEbits.LATE2 // GREEN WIRE
-#define DATA    LATB
+#define PIC_ID          4
+#define SEND_DATA       (PIC_ID-1)
+#define UPDATE_POSITION (PIC_ID-3)
+#define PIC_HAPTIC      (PIC_ID+3)
+#define SLAVE_INDATA    0//(PIC_ID-4)
+#define MASTER_INDATA   (PIC_ID-1)
+
+// IO definitions
 #define LEDRED  LATEbits.LATE3 // RED
 #define LEDYLW  LATEbits.LATE4 // YELLOW
 #define LEDGRN  LATEbits.LATE5 // GREEN
@@ -34,6 +37,12 @@
 #define SET_CGRAM_ADD       0x40 // OR this with AC0-AC5 CGRAM address
 #define SET_DDRAM_ADD       0x80 // OR this with AC0-AC6 DDRAM address
 
+// IO for 16x2 LCD
+#define RS      LATEbits.LATE0 // RED WIRE
+#define RW      LATEbits.LATE1 // BLUE WIRE
+#define EN      LATEbits.LATE2 // GREEN WIRE
+#define DATA    LATB
+
 // CAN Operation Modes
 #define CONFIG_MODE     4
 #define LISTEN_ALL      7
@@ -43,11 +52,15 @@
 #define NORMAL          0
 
 // CAN bit timing
-#define FOSC        7370000 // 7.37MHz
+#define FOSC        20000000 // 7.37MHz
 #define FCY         FOSC/4
-#define BITRATE     100000  // 100kbps
+#define BITRATE     1000000  // 100kbps
 #define NTQ         16      // Amount of Tq per bit time
 #define BRP_VAL     (((4*FCY)/(2*NTQ*BITRATE))-1) // refer to pg. 693 of Family Reference
+
+// UART baud rate
+#define UART_BAUD   115000
+#define UART_BRG    (FCY/(16*UART_BAUD))-1 // refer to pg. 506 of family reference
 
 // Define motorState state values
 #define INITIALIZE          100
@@ -68,9 +81,9 @@
 #define NEW_KI_CONST       13
 
 // Define PID controls
-#define PID_KP  123.455
-#define PID_KD  123.455
-#define PID_KI  123.455
+#define PID_KP  1
+#define PID_KD  0.1
+#define PID_KI  0
 #define PID_TI  0
 #define PID_TD  0
 #define PID_TS  10
@@ -101,6 +114,8 @@ unsigned int OutData0[4] = {0, 0, 0, 0};
 unsigned int motorState = INITIALIZE;
 unsigned char txInProgress, sendMsg = 1;
 unsigned int ADCValue0, ADCValue1 = 0;
+char txData[UART_TX_LEN] = {'\0'};
+char rxData[UART_TX_LEN] = {'\0'};
 
 void InitCan(void) {
     // Initializing CAN Module Control Register
@@ -195,32 +210,36 @@ void InitPwm(void) {
     return;
 }
 
-void InitUart() {
-    U1MODEbits.UARTEN = 0; // UART is disabled
-    U1MODEbits.USIDL = 0; // Continue operation in Idle Mode
-    U1MODEbits.ALTIO = 1; // UART communicates using U1ATX and U1ARX (pins 11&12)
-    U1MODEbits.WAKE = 1; // Enable wake-up on Start bit detec durign sleep mode
-    U1MODEbits.PDSEL = 0; // 8-bit data, no parity
-    U1MODEbits.STSEL = 0; // 2 stop bits
+void InitUart(){
+    U1MODEbits.UARTEN = 0;      // UART is disabled
+    U1MODEbits.USIDL = 0;       // Continue operation in Idle Mode
+    U1MODEbits.ALTIO = 1;       // UART communicates using U1ATX and U1ARX (pins 11&12)
+    U1MODEbits.WAKE = 1;        // Enable wake-up on Start bit detec durign sleep mode
+    U1MODEbits.PDSEL = 0;       // 8-bit data, no parity
+    U1MODEbits.STSEL = 0;       // 1 stop bit
 
-    U1STAbits.UTXISEL = 0; // Interrupt when TX buffer has one character empty
-    U1STAbits.UTXBRK = 0; // U1TX pin operates normally
-    U1STAbits.URXISEL = 0; // Interrupt when word moves from REG to RX buffer
-    U1STAbits.ADDEN = 0; // Address detect mode disabled
+    U1STAbits.UTXISEL = 0;      // Interrupt when TX buffer has one character empty
+    U1STAbits.UTXBRK = 0;       // U1TX pin operates normally
+    U1STAbits.URXISEL = 0;      // Interrupt when word moves from REG to RX buffer
+    U1STAbits.ADDEN = 0;        // Address detect mode disabled
 
-    U1BRG = 11; // p.507 of family reference
-    // 9600 baud rate
+//    U1BRG = 11;                 // p.507 of family reference
+//                                // 9600 baud rate for FOSC = 7.37MHz
+//    U1BRG =  UART_BRG;           // p.507 of family reference
+//                                // 115000 baud rate for FOSC = 20MHz
+    U1BRG =  7;           // p.507 of family reference
+                                // 38400 baud rate for FOSC = 20MHz
 
-    IFS0bits.U1TXIF = 0; // Clear U1TX interrupt
-    IFS0bits.U1RXIF = 0; // Clear U1RX interrupt
-    IPC2bits.U1TXIP = 5; // U1TX interrupt 5 priority
-    IPC2bits.U1RXIP = 5; // U1RX interrupt 5 priority
-    IEC0bits.U1TXIE = 1; // Enable U1TX interrupt
-    IEC0bits.U1RXIE = 1; // Enable U1RX interrupt
+    IFS0bits.U1TXIF = 0;        // Clear U1TX interrupt
+    IFS0bits.U1RXIF = 0;        // Clear U1RX interrupt
+    IPC2bits.U1TXIP = 5;        // U1TX interrupt 5 priority
+    IPC2bits.U1RXIP = 5;        // U1RX interrupt 5 priority
+    IEC0bits.U1TXIE = 1;        // Enable U1TX interrupt
+    IEC0bits.U1RXIE = 1;        // Enable U1RX interrupt
 
-    U1MODEbits.LPBACK = 0; // Enable loopback mode
-    U1MODEbits.UARTEN = 1; // UART is enabled
-    U1STAbits.UTXEN = 1; // U1TX pin enabled
+    U1MODEbits.LPBACK = 0;      // Enable loopback mode
+    U1MODEbits.UARTEN = 1;      // UART is enabled
+    U1STAbits.UTXEN = 1;        // U1TX pin enabled
 
 }
 
@@ -289,7 +308,7 @@ void msDelay(unsigned int mseconds) //For counting time in ms
     int i;
     int j;
     for (i = mseconds; i; i--) {
-        for (j = 265; j; j--) {
+         for (j = 714; j; j--) {
             // 5667 for XT_PLL8 -> Fcy = 34MHz
             // 714 for 20MHz oscillator -> Fcy=4.3MHz
             // 265 for FRC
@@ -346,9 +365,8 @@ unsigned int * CalcPid(pid_t *mypid, float degPOT, float degMTR) {
     return pwmOUT;
 }
 
+
 int main() {
-    char txData[UART_TX_LEN] = {'\0'};
-    char rxData[UART_TX_LEN] = {'\0'};
     InitCan();      // Initialize CAN module
     InitUart();     // Initialize UART module
     InitPwm();      // Initialize PWM module
@@ -362,6 +380,11 @@ int main() {
     float degMTR = 0.0;
     unsigned int pwmOUT[4]={0, 0, 0, 0};
     pid_t mypid;
+    float newKP = 0.0;
+    float newKD = 0.0;
+    float newKI = 0.0;
+    unsigned char charArray[8] = {'\0'};
+
 
 
 
@@ -392,12 +415,12 @@ int main() {
                         C1TX0B4 = SEND_HOME;
                         C1TX0CONbits.TXREQ = 1;
                         while (C1TX0CONbits.TXREQ != 0);
-                        sprintf(txData, "%c\r\n", sendMsg);
 
-//                        for (i = 0; i < UART_TX_LEN; i++) {
-//                            U1TXREG = txData[i];
-//                            while (!(U1STAbits.TRMT));
-//                        }
+                        sprintf(txData, "%c\r\n", sendMsg);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
 
                         sendMsg = 0;
                         break;
@@ -408,14 +431,93 @@ int main() {
                         C1TX0CONbits.TXREQ = 1;
                         while (C1TX0CONbits.TXREQ != 0);
                         
-//                        sprintf(txData, "%c\r\n", sendMsg);
-//                        for (i = 0; i < UART_TX_LEN; i++) {
-//                            U1TXREG = txData[i];
-//                            while (!(U1STAbits.TRMT));
-//                        }
+                        sprintf(txData, "%c\r\n", sendMsg);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
 
                         sendMsg = 0;
                         break;
+                    case 51:
+                        // Sends new KP constants
+
+                        newKP = (float) PID_KP;
+                        sprintf(charArray, "%f\0", newKP);
+                        j = 0;
+                        for (i = 0; i < 3; i++) {
+                            OutData0[i] = charArray[j];
+                            OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
+                            j += 2;
+                        }
+                        C1TX0B1 = OutData0[0];
+                        C1TX0B2 = OutData0[1];
+                        C1TX0B3 = OutData0[2];
+                        C1TX0B4 = KP_PROGRAM;
+                        C1TX0CONbits.TXREQ = 1;
+                        while (C1TX0CONbits.TXREQ != 0);
+
+                        sprintf(txData, "New KP of %f\r\n", newKP);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
+
+                        sendMsg = 0;
+                        break;
+                    case 52:
+                        // Sends new KP constants
+
+                        newKD = (float) PID_KD;
+                        sprintf(charArray, "%f\0", newKD);
+                        j = 0;
+                        for (i = 0; i < 3; i++) {
+                            OutData0[i] = charArray[j];
+                            OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
+                            j += 2;
+                        }
+                        C1TX0B1 = OutData0[0];
+                        C1TX0B2 = OutData0[1];
+                        C1TX0B3 = OutData0[2];
+                        C1TX0B4 = KD_PROGRAM;
+                        C1TX0CONbits.TXREQ = 1;
+                        while (C1TX0CONbits.TXREQ != 0);
+
+                        sprintf(txData, "New KD of %f\r\n", newKD);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
+
+                        sendMsg = 0;
+                        break;
+                    case 53:
+                        // Sends new KP constants
+
+                        newKI = (float) PID_KI;
+                        sprintf(charArray, "%f\0", newKI);
+                        j = 0;
+                        for (i = 0; i < 3; i++) {
+                            OutData0[i] = charArray[j];
+                            OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
+                            j += 2;
+                        }
+                        C1TX0B1 = OutData0[0];
+                        C1TX0B2 = OutData0[1];
+                        C1TX0B3 = OutData0[2];
+                        C1TX0B4 = KI_PROGRAM;
+                        C1TX0CONbits.TXREQ = 1;
+                        while (C1TX0CONbits.TXREQ != 0);
+
+                        sprintf(txData, "New KI of %f\r\n", newKI);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
+
+                        sendMsg = 0;
+                        break;
+
                 }
 
 
@@ -423,11 +525,11 @@ int main() {
         }
 
 
-        sprintf(txData, "%u %u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2], masterData[3]);
-        for (i = 0; i < UART_TX_LEN; i++) {
-            U1TXREG = txData[i];
-            while (!(U1STAbits.TRMT));
-        }
+//        sprintf(txData, "%u %u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2], masterData[3]);
+//        for (i = 0; i < UART_TX_LEN; i++) {
+//            U1TXREG = txData[i];
+//            while (!(U1STAbits.TRMT));
+//        }
 
 
         msDelay(PID_TS);
@@ -448,15 +550,15 @@ void __attribute__((interrupt, no_auto_psv)) _C1Interrupt(void) {
             if (C1RX0B4 == 1) {
                 masterData[0] = C1RX0B1;
             } else if (C1RX0B4 == 2) {
-                masterData[1] = C1RX0B2;
+                masterData[1] = C1RX0B1;
             } else if (C1RX0B4 == 3) {
-                masterData[2] = C1RX0B3;
+                masterData[2] = C1RX0B1;
             } else if (C1RX0B4 == 4) {
                 slaveData[0] = C1RX0B1;
             } else if (C1RX0B4 == 5) {
-                slaveData[1] = C1RX0B2;
+                slaveData[1] = C1RX0B1;
             } else {
-                slaveData[2] = C1RX0B3;
+                slaveData[2] = C1RX0B1;
             }
 //        }
     } // RX0IF
@@ -485,14 +587,14 @@ void __attribute__((interrupt, no_auto_psv)) _INT0Interrupt(void) {
 
 //    unsigned char i, j = 0;
 //    float newKP = 0.0;
-//    unsigned char charArrayKP[8]={'\0'};
+//    unsigned char charArray[8]={'\0'};
 //    // Sends new PID constants
 //    newKP = (float) PID_KD;
-//    sprintf(charArrayKP, "%f\0", newKP);
+//    sprintf(charArray, "%f\0", newKP);
 //    j = 0;
 //    for (i = 0; i < 3; i++) {
-//        OutData0[i] = charArrayKP[j];
-//        OutData0[i] = (OutData0[i] << 8) + charArrayKP[j + 1];
+//        OutData0[i] = charArray[j];
+//        OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
 //        j += 2;
 //    }
 //
@@ -514,14 +616,14 @@ void __attribute__((interrupt, no_auto_psv)) _INT1Interrupt(void) {
 
 //    unsigned char i, j = 0;
 //    float newKP = 0.0;
-//    unsigned char charArrayKP[8]={'\0'};
+//    unsigned char charArray[8]={'\0'};
 //    // Sends new PID constants
 //    newKP = (float) PID_KP;
-//    sprintf(charArrayKP, "%f\0", newKP);
+//    sprintf(charArray, "%f\0", newKP);
 //    j = 0;
 //    for (i = 0; i < 3; i++) {
-//        OutData0[i] = charArrayKP[j];
-//        OutData0[i] = (OutData0[i] << 8) + charArrayKP[j + 1];
+//        OutData0[i] = charArray[j];
+//        OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
 //        j += 2;
 //    }
 //
@@ -544,14 +646,14 @@ void __attribute__((interrupt, no_auto_psv)) _INT1Interrupt(void) {
 /********************** code for encoding float to ASCII ***********************
 *    unsigned char i, j = 0;
 *    float newKP = 0.0;
-*    unsigned char charArrayKP[8]={'\0'};
+*    unsigned char charArray[8]={'\0'};
 *    // Sends new PID constants
 *    newKP = (float) PID_KP;
-*    sprintf(charArrayKP, "%f\0", newKP);
+*    sprintf(charArray, "%f\0", newKP);
 *    j = 0;
 *    for (i = 0; i < 3; i++) {
-*        OutData0[i] = charArrayKP[j];
-*        OutData0[i] = (OutData0[i] << 8) + charArrayKP[j + 1];
+*        OutData0[i] = charArray[j];
+*        OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
 *        j += 2;
 *    }
 *******************************************************************************/
@@ -561,14 +663,14 @@ void __attribute__((interrupt, no_auto_psv)) _INT2Interrupt(void) {
     IFS1bits.INT2IF = 0;
 //    unsigned char i, j = 0;
 //    float newKP = 0.0;
-//    unsigned char charArrayKP[8]={'\0'};
+//    unsigned char charArray[8]={'\0'};
 //    // Sends new PID constants
 //    newKP = (float) PID_KI;
-//    sprintf(charArrayKP, "%f\0", newKP);
+//    sprintf(charArray, "%f\0", newKP);
 //    j = 0;
 //    for (i = 0; i < 3; i++) {
-//        OutData0[i] = charArrayKP[j];
-//        OutData0[i] = (OutData0[i] << 8) + charArrayKP[j + 1];
+//        OutData0[i] = charArray[j];
+//        OutData0[i] = (OutData0[i] << 8) + charArray[j + 1];
 //        j += 2;
 //    }
 //
