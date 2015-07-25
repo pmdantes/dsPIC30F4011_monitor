@@ -25,7 +25,7 @@
 #define TRISRED  TRISEbits.TRISE3 // YELLOW
 #define TRISYLW  TRISEbits.TRISE4 // YELLOW
 #define TRISGRN  TRISEbits.TRISE5 // GREEN
-#define UART_TX_LEN 50
+#define UART_TX_LEN 36
 
 // Display commands for LMB162ABC
 #define CLEAR_DISPLAY       0x01 // Writes "20h" (ASCII for space
@@ -81,9 +81,9 @@
 #define NEW_KI_CONST       13
 
 // Define PID controls
-#define PID_KP  1
-#define PID_KD  0.1
-#define PID_KI  0
+#define PID_KP  123.45
+#define PID_KD  123.45
+#define PID_KI  123.45
 #define PID_TI  0
 #define PID_TD  0
 #define PID_TS  10
@@ -389,6 +389,10 @@ int main() {
 
 
     while (1) {
+
+        for (i = 0; i < UART_TX_LEN; i++) {
+            txData[i] = '\0';
+        }
         switch (motorState) {
             case INITIALIZE:
 
@@ -416,7 +420,7 @@ int main() {
                         C1TX0CONbits.TXREQ = 1;
                         while (C1TX0CONbits.TXREQ != 0);
 
-                        sprintf(txData, "%c\r\n", sendMsg);
+                        sprintf(txData, "Homing...\r\n");
                         for (i = 0; i < UART_TX_LEN; i++) {
                             U1TXREG = txData[i];
                             while (!(U1STAbits.TRMT));
@@ -431,7 +435,7 @@ int main() {
                         C1TX0CONbits.TXREQ = 1;
                         while (C1TX0CONbits.TXREQ != 0);
                         
-                        sprintf(txData, "%c\r\n", sendMsg);
+                        sprintf(txData, "Normal Operation\r\n");
                         for (i = 0; i < UART_TX_LEN; i++) {
                             U1TXREG = txData[i];
                             while (!(U1STAbits.TRMT));
@@ -518,20 +522,31 @@ int main() {
                         sendMsg = 0;
                         break;
 
+                    case 80:
+                        // Sends position values
+                        txInProgress = 0;
+                        sprintf(txData, "%5u %5u %5u %5u %5u %5u\0", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
+                        for (i = 0; i < UART_TX_LEN; i++) {
+                            U1TXREG = txData[i];
+                            while (!(U1STAbits.TRMT));
+                        }
+                        txInProgress = 1;
+                        sendMsg = 0;
+                        break;
+
                 }
 
 
                 break;
         }
 
-
 //        sprintf(txData, "%u %u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2], masterData[3]);
+//        sprintf(txData, "%u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
+//        sprintf(txData, "%u %u %u %u %u %u\0", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
 //        for (i = 0; i < UART_TX_LEN; i++) {
 //            U1TXREG = txData[i];
 //            while (!(U1STAbits.TRMT));
 //        }
-
-
         msDelay(PID_TS);
     } //while
 } // main
@@ -570,7 +585,9 @@ void __attribute__((interrupt, no_auto_psv)) _U1TXInterrupt(void) {
 
 void __attribute__((interrupt, no_auto_psv)) _U1RXInterrupt(void) {
     IFS0bits.U1RXIF = 0; // Clear U1RX interrupt
-    sendMsg = U1RXREG;
+    if (sendMsg != 80) {
+        sendMsg = U1RXREG;
+    }
 }
 
 void __attribute__((interrupt, no_auto_psv)) _ADCInterrupt(void) {
