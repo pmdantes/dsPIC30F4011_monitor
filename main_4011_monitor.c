@@ -25,7 +25,7 @@
 #define TRISRED  TRISEbits.TRISE3 // YELLOW
 #define TRISYLW  TRISEbits.TRISE4 // YELLOW
 #define TRISGRN  TRISEbits.TRISE5 // GREEN
-#define UART_TX_LEN 36
+#define UART_TX_LEN 37
 
 // Display commands for LMB162ABC
 #define CLEAR_DISPLAY       0x01 // Writes "20h" (ASCII for space
@@ -81,9 +81,9 @@
 #define NEW_KI_CONST       13
 
 // Define PID controls
-#define PID_KP  123.45
-#define PID_KD  123.45
-#define PID_KI  123.45
+#define PID_KP  1.0
+#define PID_KD  0.1
+#define PID_KI  0
 #define PID_TI  0
 #define PID_TD  0
 #define PID_TS  10
@@ -346,7 +346,7 @@ unsigned int * CalcPid(pid_t *mypid, float degPOT, float degMTR) {
     mypid->d = (mypid->T * mypid->dlast) / mypid->N + (mypid->Kd * mypid->T)*(mypid->y - mypid->ylast) / (mypid->T + (mypid->T / mypid->N));
     mypid->u = mypid->Kp * mypid->e; //+mypid->d;
 
-    pidOutDutyCycle = (float) ((mypid->u / degPOT)*2 * PWM_COUNTS_PERIOD);
+    pidOutDutyCycle = (float) ((mypid->u / degPOT)* 2 * PWM_COUNTS_PERIOD);
 
 
     if (pidOutDutyCycle >= 2 * PWM_COUNTS_PERIOD) {
@@ -525,11 +525,11 @@ int main() {
                     case 80:
                         // Sends position values
                         txInProgress = 0;
-                        sprintf(txData, "%5u %5u %5u %5u %5u %5u\0", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
-                        for (i = 0; i < UART_TX_LEN; i++) {
-                            U1TXREG = txData[i];
-                            while (!(U1STAbits.TRMT));
-                        }
+//                        sprintf(txData, "%5u %5u %5u %5u %5u %5u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
+//                        for (i = 0; i < UART_TX_LEN; i++) {
+//                            U1TXREG = txData[i];
+//                            while (!(U1STAbits.TRMT));
+//                        }
                         txInProgress = 1;
                         sendMsg = 0;
                         break;
@@ -541,12 +541,12 @@ int main() {
         }
 
 //        sprintf(txData, "%u %u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2], masterData[3]);
-//        sprintf(txData, "%u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
+        sprintf(txData, "%u %u %u %u %u %u\r\n", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
 //        sprintf(txData, "%u %u %u %u %u %u\0", masterData[0], masterData[1], masterData[2], slaveData[0], slaveData[1], slaveData[2]);
-//        for (i = 0; i < UART_TX_LEN; i++) {
-//            U1TXREG = txData[i];
-//            while (!(U1STAbits.TRMT));
-//        }
+        for (i = 0; i < UART_TX_LEN; i++) {
+            U1TXREG = txData[i];
+            while (!(U1STAbits.TRMT));
+        }
         msDelay(PID_TS);
     } //while
 } // main
@@ -572,7 +572,10 @@ void __attribute__((interrupt, no_auto_psv)) _C1Interrupt(void) {
                 slaveData[0] = C1RX0B1;
             } else if (C1RX0B4 == 5) {
                 slaveData[1] = C1RX0B1;
+//                slaveData[2] = C1RX0B3;
             } else {
+//                slaveData[0] = C1RX0B1;
+//                slaveData[1] = C1RX0B2;
                 slaveData[2] = C1RX0B1;
             }
 //        }
